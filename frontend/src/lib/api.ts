@@ -1,0 +1,36 @@
+const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+
+export { formatCurrency, formatCurrencyTable, formatCurrencyCompact, chartCurrencyHover, DIRHAM_UNICODE } from "@/lib/currency";
+
+export async function fetchDashboard() {
+  const res = await fetch(`${API_BASE}/api/dashboard`, { cache: "no-store" });
+  if (!res.ok) throw new Error("Failed to load dashboard data");
+  return res.json();
+}
+
+export async function uploadDashboard(salesFile?: File, plFile?: File) {
+  const form = new FormData();
+  if (salesFile) form.append("sales_file", salesFile);
+  if (plFile) form.append("pl_file", plFile);
+
+  const res = await fetch(`${API_BASE}/api/dashboard/upload`, {
+    method: "POST",
+    body: form,
+  });
+  if (!res.ok) throw new Error("Failed to process uploaded files");
+  return res.json();
+}
+
+export async function categorizeExpense(description: string) {
+  const res = await fetch(`${API_BASE}/api/categorize`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ description }),
+  });
+  if (!res.ok) throw new Error("Categorization failed");
+  return res.json();
+}
+
+export function exportUrl(type: "excel" | "pdf"): string {
+  return `${API_BASE}/api/export/${type}`;
+}
