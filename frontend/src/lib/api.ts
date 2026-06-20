@@ -1,4 +1,17 @@
-const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+function resolveApiBase(): string {
+  const fromEnv =
+    process.env.NEXT_PUBLIC_API_URL ??
+    process.env.NEXT_PUBLIC_BACKEND_URL;
+
+  if (fromEnv) return fromEnv.replace(/\/$/, "");
+
+  // Same-origin on Vercel Services (frontend + backend in one project)
+  if (process.env.VERCEL) return "";
+
+  return "http://localhost:8000";
+}
+
+const API_BASE = resolveApiBase();
 
 export { formatCurrency, formatCurrencyTable, formatCurrencyCompact, chartCurrencyHover, DIRHAM_UNICODE } from "@/lib/currency";
 

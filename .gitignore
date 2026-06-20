@@ -6,4 +6,6 @@ data/uploads/*
 !data/uploads/.gitkeep
 frontend/.next/
 frontend/node_modules/
+node_modules/
 .env.local
+.env*.local

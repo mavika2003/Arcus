@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import io
+import os
 import sys
 from pathlib import Path
 from typing import Optional
 
 import numpy as np
 import pandas as pd
-from fastapi import FastAPI, File, UploadFile
+from fastapi import APIRouter, FastAPI, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, StreamingResponse
 
@@ -22,18 +23,27 @@ from src.services.export import export_to_excel, export_to_pdf
 
 app = FastAPI(title="Arcus Financial API", version="1.0.0")
 
+# Local dev: routes at /api/*. Vercel Services strips /api prefix before forwarding.
+API_PREFIX = "" if os.getenv("VERCEL") else "/api"
+router = APIRouter(prefix=API_PREFIX)
+
+_local_origins = [
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "http://localhost:3001",
+    "http://127.0.0.1:3001",
+    "http://localhost:3002",
+    "http://127.0.0.1:3002",
+    "http://localhost:3003",
+    "http://127.0.0.1:3003",
+]
+if vercel_url := os.getenv("VERCEL_URL"):
+    _local_origins.append(f"https://{vercel_url}")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-        "http://localhost:3001",
-        "http://127.0.0.1:3001",
-        "http://localhost:3002",
-        "http://127.0.0.1:3002",
-        "http://localhost:3003",
-        "http://127.0.0.1:3003",
-    ],
+    allow_origins=_local_origins,
+    allow_origin_regex=r"https://.*\.vercel\.app",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -90,18 +100,18 @@ def _serialize_dashboard(data) -> dict:
   })
 
 
-@app.get("/api/health")
+@router.get("/health")
 def health():
   return {"status": "ok"}
 
 
-@app.get("/api/dashboard")
+@router.get("/dashboard")
 def get_dashboard():
   data = process_data()
   return _serialize_dashboard(data)
 
 
-@app.post("/api/dashboard/upload")
+@router.post("/dashboard/upload")
 async def upload_dashboard(
   sales_file: Optional[UploadFile] = File(None),
   pl_file: Optional[UploadFile] = File(None),
@@ -116,13 +126,13 @@ async def upload_dashboard(
   return _serialize_dashboard(data)
 
 
-@app.post("/api/categorize")
+@router.post("/categorize")
 def categorize(body: dict):
   description = body.get("description", "")
   return categorize_expense(description)
 
 
-@app.get("/api/export/excel")
+@router.get("/export/excel")
 def export_excel():
   data = process_data()
   content = export_to_excel(
@@ -136,7 +146,7 @@ def export_excel():
   )
 
 
-@app.get("/api/export/pdf")
+@router.get("/export/pdf")
 def export_pdf():
   data = process_data()
   content = export_to_pdf(data.ytd_summary, data.pl_df, data.company_name)
@@ -145,3 +155,6 @@ def export_pdf():
     media_type="application/pdf",
     headers={"Content-Disposition": "attachment; filename=arcus_financial_report.pdf"},
   )
+
+
+app.include_router(router)
