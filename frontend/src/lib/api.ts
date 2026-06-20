@@ -5,9 +5,7 @@ function resolveApiBase(): string {
 
   if (fromEnv) return fromEnv.replace(/\/$/, "");
 
-  // Same-origin on Vercel Services (frontend + backend in one project)
-  if (process.env.VERCEL) return "";
-
+  // Local dev — backend runs separately (uvicorn on :8000)
   return "http://localhost:8000";
 }
 

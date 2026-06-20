@@ -23,11 +23,10 @@ from src.services.export import export_to_excel, export_to_pdf
 
 app = FastAPI(title="Arcus Financial API", version="1.0.0")
 
-# Local dev: routes at /api/*. Vercel Services strips /api prefix before forwarding.
-API_PREFIX = "" if os.getenv("VERCEL") else "/api"
-router = APIRouter(prefix=API_PREFIX)
+router = APIRouter(prefix="/api")
 
-_local_origins = [
+# CORS — allow Vercel frontend + custom domains via ALLOWED_ORIGINS (comma-separated)
+_default_origins = [
     "http://localhost:3000",
     "http://127.0.0.1:3000",
     "http://localhost:3001",
@@ -37,13 +36,16 @@ _local_origins = [
     "http://localhost:3003",
     "http://127.0.0.1:3003",
 ]
-if vercel_url := os.getenv("VERCEL_URL"):
-    _local_origins.append(f"https://{vercel_url}")
+_extra = os.getenv("ALLOWED_ORIGINS", "")
+if _extra:
+    _default_origins.extend(o.strip() for o in _extra.split(",") if o.strip())
+if frontend_url := os.getenv("FRONTEND_URL"):
+    _default_origins.append(frontend_url.rstrip("/"))
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=_local_origins,
-    allow_origin_regex=r"https://.*\.vercel\.app",
+    allow_origins=_default_origins,
+    allow_origin_regex=r"https://.*\.(vercel\.app|onrender\.com)",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

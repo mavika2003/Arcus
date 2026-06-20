@@ -1,11 +1,18 @@
 """Application configuration and constants."""
 
+import os
 from pathlib import Path
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = ROOT_DIR / "data"
 RAW_DIR = DATA_DIR / "raw"
 UPLOAD_DIR = DATA_DIR / "uploads"
+
+# --- Data source: local CSVs today, Supabase tomorrow ---
+# When SUPABASE_URL is set, loaders will read from Postgres instead of files.
+SUPABASE_URL = os.getenv("SUPABASE_URL", "")
+SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
+USE_SUPABASE = bool(SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY)
 
 SALES_DIR = ROOT_DIR / "Sales"
 EXPENSES_DIR = ROOT_DIR / "Expenses"
