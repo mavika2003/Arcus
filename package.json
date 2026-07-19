@@ -1,4 +1,11 @@
 {
+  "name": "arcus",
+  "private": true,
+  "scripts": {
+    "build": "npm install --prefix frontend && npm run build --prefix frontend",
+    "start": "npm run start --prefix frontend",
+    "dev": "npm run dev --prefix frontend"
+  },
   "dependencies": {
     "dirham": "^1.5.3"
   }
