@@ -1,11 +1,9 @@
 /**
- * Most API calls use same-origin `/api/...` (Vercel → Render rewrite).
- * Receipt OCR goes directly to Render — large uploads + slow Tesseract time out
- * through Vercel's proxy.
+ * API calls use same-origin `/api/...`.
+ * - JSON routes: next.config rewrites → Render
+ * - Receipt OCR: Next.js route handlers (longer timeout, multipart-safe)
  *
- * Vercel env vars:
- *   API_URL              = https://your-app.onrender.com  (server rewrite)
- *   NEXT_PUBLIC_API_URL  = https://your-app.onrender.com  (browser OCR)
+ * Vercel env: API_URL = https://your-app.onrender.com
  */
 
 function normalizeBackendUrl(raw: string | undefined | null): string | null {
@@ -15,8 +13,9 @@ function normalizeBackendUrl(raw: string | undefined | null): string | null {
   return url;
 }
 
-function proxyApiUrl(path: string): string {
+function apiUrl(path: string): string {
   if (typeof window !== "undefined") return path;
+
   const base = normalizeBackendUrl(
     process.env.API_URL ??
       process.env.NEXT_PUBLIC_API_URL ??
@@ -25,39 +24,13 @@ function proxyApiUrl(path: string): string {
   return base ? `${base}${path}` : path;
 }
 
-/** Direct Render URL for long-running OCR uploads (browser only). */
-function directBackendUrl(path: string): string {
-  const base = normalizeBackendUrl(
-    process.env.NEXT_PUBLIC_API_URL ??
-      process.env.NEXT_PUBLIC_BACKEND_URL ??
-      process.env.API_URL,
-  );
-  if (base) return `${base}${path}`;
-  // Local / fallback: same-origin proxy
-  return proxyApiUrl(path);
-}
-
 async function apiFetch(path: string, init?: RequestInit): Promise<Response> {
-  const url = proxyApiUrl(path);
+  const url = apiUrl(path);
   try {
     return await fetch(url, init);
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Network error";
     throw new Error(`Failed to reach API (${url}): ${msg}`);
-  }
-}
-
-async function directFetch(path: string, init?: RequestInit): Promise<Response> {
-  const url = directBackendUrl(path);
-  try {
-    return await fetch(url, init);
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : "Network error";
-    const hint =
-      typeof window !== "undefined" && !process.env.NEXT_PUBLIC_API_URL
-        ? " Set NEXT_PUBLIC_API_URL=https://your-app.onrender.com on Vercel and redeploy."
-        : "";
-    throw new Error(`Failed to reach backend (${url}): ${msg}.${hint}`);
   }
 }
 
@@ -72,10 +45,23 @@ async function readErrorDetail(res: Response, fallback: string): Promise<string>
   } catch {
     /* ignore */
   }
+  if (res.status === 504 || res.status === 408) {
+    return "OCR timed out — try a smaller JPG photo or wait for the server to wake up, then retry.";
+  }
   return `${fallback} (HTTP ${res.status})`;
 }
 
+/** Wake Render free tier before a slow OCR request. */
+async function wakeBackend(): Promise<void> {
+  try {
+    await apiFetch("/api/health", { cache: "no-store" });
+  } catch {
+    /* best-effort */
+  }
+}
+
 export { formatCurrency, formatCurrencyTable, formatCurrencyCompact, chartCurrencyHover, DIRHAM_UNICODE } from "@/lib/currency";
+export { compressReceiptImage } from "@/lib/compressImage";
 
 export async function fetchDashboard() {
   const res = await apiFetch("/api/dashboard", { cache: "no-store" });
@@ -107,7 +93,6 @@ export async function categorizeExpense(description: string) {
 }
 
 export async function scanReceipt(file: File) {
-  // Phone photos can be large — warn early
   const maxMb = 12;
   if (file.size > maxMb * 1024 * 1024) {
     throw new Error(
@@ -115,11 +100,16 @@ export async function scanReceipt(file: File) {
     );
   }
 
-  const form = new FormData();
-  form.append("file", file);
+  const { compressReceiptImage } = await import("@/lib/compressImage");
+  const compressed = await compressReceiptImage(file);
 
-  // Direct to Render — OCR can take 30–90s; Vercel proxy times out
-  const res = await directFetch("/api/upload-receipt", {
+  await wakeBackend();
+
+  const form = new FormData();
+  form.append("file", compressed);
+
+  // Same-origin route handler → Render (avoids browser CORS / cross-site upload issues)
+  const res = await apiFetch("/api/upload-receipt", {
     method: "POST",
     body: form,
   });
@@ -133,7 +123,7 @@ export async function scanReceipt(file: File) {
 export const uploadReceipt = scanReceipt;
 
 export async function confirmReceipt(receipt: import("@/lib/types").ReceiptPreview) {
-  const res = await directFetch("/api/receipts/confirm", {
+  const res = await apiFetch("/api/receipts/confirm", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(receipt),
@@ -146,7 +136,7 @@ export async function confirmReceipt(receipt: import("@/lib/types").ReceiptPrevi
 
 export async function deleteLatestReceipt(month?: string) {
   const q = month ? `?month=${encodeURIComponent(month)}` : "";
-  const res = await directFetch(`/api/receipts/latest${q}`, {
+  const res = await apiFetch(`/api/receipts/latest${q}`, {
     method: "DELETE",
   });
   if (!res.ok) {
@@ -162,5 +152,5 @@ export async function fetchReceipts() {
 }
 
 export function exportUrl(type: "excel" | "pdf"): string {
-  return proxyApiUrl(`/api/export/${type}`);
+  return apiUrl(`/api/export/${type}`);
 }
