@@ -21,10 +21,11 @@ function formatSigned(amount: number, opts: FormatOpts = {}): string {
 
 /** Plain-text currency — AED prefix (charts, Plotly, table strings) */
 export function formatCurrency(value: number): string {
-  const abs = Math.abs(value);
-  if (abs >= 1_000_000) return formatSigned(value, { compact: true, decimals: 2, useCode: true });
-  if (abs >= 1_000) return formatSigned(value, { decimals: 0, useCode: true });
-  return formatSigned(value, { decimals: 2, useCode: true });
+  const safe = Number.isFinite(value) ? value : 0;
+  const abs = Math.abs(safe);
+  if (abs >= 1_000_000) return formatSigned(safe, { compact: true, decimals: 2, useCode: true });
+  if (abs >= 1_000) return formatSigned(safe, { decimals: 0, useCode: true });
+  return formatSigned(safe, { decimals: 2, useCode: true });
 }
 
 /** Fixed-width table formatting — whole dirhams, aligned columns */
@@ -34,12 +35,13 @@ export function formatCurrencyTable(value: number): string {
 
 /** Compact label for charts e.g. AED 77.3k */
 export function formatCurrencyCompact(value: number): string {
-  const abs = Math.abs(value);
-  const sign = value < 0 ? "-" : "";
+  const safe = Number.isFinite(value) ? value : 0;
+  const abs = Math.abs(safe);
+  const sign = safe < 0 ? "-" : "";
   if (abs >= 1_000) {
     return `${sign}AED ${(abs / 1000).toFixed(1)}k`;
   }
-  return formatSigned(value, { decimals: 0, useCode: true });
+  return formatSigned(safe, { decimals: 0, useCode: true });
 }
 
 /** Plotly / tooltip hover strings */

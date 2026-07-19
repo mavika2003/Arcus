@@ -15,6 +15,7 @@ import {
 import "@xyflow/react/dist/style.css";
 import Currency from "@/components/Currency";
 import type { YtdSummary } from "@/lib/types";
+import { formatMarginPct } from "@/lib/ytd";
 import { useChartTheme } from "@/lib/theme";
 import GlassCard, { SectionLabel, SectionTitle } from "@/components/GlassCard";
 
@@ -117,7 +118,7 @@ export default function PLFlowDiagram({ ytd, onNavigate }: PLFlowDiagramProps) {
       data: {
         label: "Net Profit",
         amount: ytd.ytd_net_profit,
-        sublabel: `${ytd.ytd_operating_margin.toFixed(1)}% margin`,
+        sublabel: `${formatMarginPct(ytd.ytd_operating_margin)} margin`,
         variant: ytd.ytd_net_profit >= 0 ? "profit" : "cost",
         onClick: () => onNavigate?.("balance"),
       },

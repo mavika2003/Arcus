@@ -38,6 +38,28 @@ from src.data.loaders import (
 from src.services.alerts import get_all_alerts
 from src.services.receipts import apply_receipt_bs_impact, load_all_receipts, merge_receipt_expenses
 
+EMPTY_YTD_SUMMARY: dict[str, float] = {
+    "ytd_revenue": 0.0,
+    "ytd_gross_profit": 0.0,
+    "ytd_total_expenses": 0.0,
+    "ytd_net_profit": 0.0,
+    "ytd_operating_margin": 0.0,
+    "ytd_cogs": 0.0,
+    "ytd_operating_expenses": 0.0,
+}
+
+
+def _ensure_ytd_summary(summary: dict | None) -> dict[str, float]:
+    """Always return a complete YTD summary — avoids null/NaN in API responses."""
+    out = {**EMPTY_YTD_SUMMARY, **(summary or {})}
+    for key, default in EMPTY_YTD_SUMMARY.items():
+        val = out.get(key)
+        if val is None or (isinstance(val, float) and pd.isna(val)):
+            out[key] = default
+        else:
+            out[key] = float(val)
+    return out
+
 
 class DashboardData:
     """Container for all processed dashboard data."""
@@ -173,6 +195,7 @@ def process_data(
         data.bs_data, data.ytd_summary.get("ytd_net_profit", 0)
     )
     data.alerts = get_all_alerts(data.recurring_costs, data.pl_df)
+    data.ytd_summary = _ensure_ytd_summary(data.ytd_summary)
 
     return data
 

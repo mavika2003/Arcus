@@ -20,6 +20,7 @@ import ReceiptUpload from "@/components/ReceiptUpload";
 import GlassCard, { SectionLabel, SectionTitle } from "@/components/GlassCard";
 import { exportUrl, fetchDashboard } from "@/lib/api";
 import Currency from "@/components/Currency";
+import { formatMarginPct, hasYtdSummary } from "@/lib/ytd";
 import type { DashboardData } from "@/lib/types";
 
 type Tab = DashboardTab;
@@ -77,6 +78,7 @@ export default function Dashboard() {
   }
 
   const ytd = data?.ytd_summary;
+  const ytdReady = hasYtdSummary(ytd);
 
   return (
     <div className="relative min-h-screen">
@@ -118,7 +120,7 @@ export default function Dashboard() {
             </p>
           </section>
 
-          {ytd && (
+          {ytdReady && (
             <section className="mb-8 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
               <MetricCard
                 label="YTD Revenue"
@@ -146,12 +148,22 @@ export default function Dashboard() {
               />
               <MetricCard
                 label="Operating Margin"
-                value={`${ytd.ytd_operating_margin.toFixed(1)}%`}
+                value={formatMarginPct(ytd.ytd_operating_margin)}
                 sub="Net profit / revenue"
                 delay={240}
                 onClick={() => navigate("overview")}
               />
             </section>
+          )}
+
+          {data && !ytdReady && (
+            <GlassCard className="mb-8 p-6">
+              <p className="text-sm text-text-secondary">
+                Connected to the API, but no financial data was loaded yet. Upload sales and expense
+                files in <button type="button" onClick={() => navigate("tools")} className="font-semibold text-accent hover:underline">Tools</button>,
+                or confirm your backend has access to the Sales/Expenses data on Render.
+              </p>
+            </GlassCard>
           )}
 
           <div className="tab-nav mb-8 flex">
@@ -167,7 +179,7 @@ export default function Dashboard() {
           </div>
 
           <div key={tab} className="animate-fade-up">
-            {tab === "overview" && data && ytd && (
+            {tab === "overview" && data && ytdReady && (
               <div className="space-y-6">
                 <PLFlowDiagram ytd={ytd} onNavigate={navigate} />
 
@@ -239,7 +251,7 @@ export default function Dashboard() {
                     <GlassCard className="p-6" delay={300}>
                       <SectionLabel>Data Processed</SectionLabel>
                       <div className="mt-3 font-mono text-4xl font-bold text-text">
-                        {data.transaction_count.toLocaleString()}
+                        {(data.transaction_count ?? 0).toLocaleString()}
                       </div>
                       <p className="mt-1 text-sm text-text-secondary">Daily sales transactions</p>
                       <div className="my-4 h-px bg-gradient-to-r from-transparent via-accent/40 to-transparent" />
@@ -274,7 +286,7 @@ export default function Dashboard() {
                     </p>
                   </GlassCard>
                 ) : null}
-                {ytd && <PLFlowDiagram ytd={ytd} onNavigate={navigate} />}
+                {ytdReady && <PLFlowDiagram ytd={ytd} onNavigate={navigate} />}
                 <PLTable rows={data.pl_display_rows} months={data.months} />
               </div>
             )}

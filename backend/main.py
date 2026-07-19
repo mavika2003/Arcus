@@ -100,7 +100,15 @@ def _serialize_dashboard(data) -> dict:
 
   return _json_safe({
     "company_name": data.company_name,
-    "ytd_summary": data.ytd_summary,
+    "ytd_summary": data.ytd_summary or {
+      "ytd_revenue": 0,
+      "ytd_gross_profit": 0,
+      "ytd_total_expenses": 0,
+      "ytd_net_profit": 0,
+      "ytd_operating_margin": 0,
+      "ytd_cogs": 0,
+      "ytd_operating_expenses": 0,
+    },
     "pl_monthly": pl_records,
     "pl_display_rows": data.pl_display_rows,
     "months": data.months,

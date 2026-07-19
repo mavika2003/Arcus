@@ -19,14 +19,15 @@ export default function Currency({
   className = "",
   weight = "semibold",
 }: CurrencyProps) {
-  const abs = Math.abs(amount);
+  const safeAmount = Number.isFinite(amount) ? amount : 0;
+  const abs = Math.abs(safeAmount);
   const resolvedDecimals =
     decimals ?? (abs >= 1_000 ? 0 : 2);
 
   if (animated) {
     return (
       <AnimatedDirhamPrice
-        amount={amount}
+        amount={safeAmount}
         decimals={resolvedDecimals}
         notation={compact ? "compact" : "standard"}
         weight={weight}
@@ -39,7 +40,7 @@ export default function Currency({
 
   return (
     <DirhamPrice
-      amount={amount}
+      amount={safeAmount}
       decimals={resolvedDecimals}
       notation={compact ? "compact" : "standard"}
       weight={weight}

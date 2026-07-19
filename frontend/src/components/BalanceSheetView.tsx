@@ -153,15 +153,22 @@ function EquityCompositionChart({
 }
 
 export default function BalanceSheetView({ data }: { data: BalanceSheet }) {
-  const hasEquity = data.shareholders_equity !== 0 || data.retained_earnings !== 0;
+  const shareholdersEquity = data.shareholders_equity ?? 0;
+  const retainedEarnings = data.retained_earnings ?? 0;
+  const totalEquity = data.total_equity ?? 0;
+  const totalLiabilities = data.total_liabilities ?? 0;
+  const totalAssets = data.total_assets ?? 0;
+  const assets = data.assets ?? [];
+  const liabilities = data.liabilities ?? [];
+  const hasEquity = shareholdersEquity !== 0 || retainedEarnings !== 0;
 
   return (
     <div className="space-y-5">
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <SummaryTile label="Shareholders Equity" value={data.shareholders_equity} />
-        <SummaryTile label="Retained Earnings" value={data.retained_earnings} positive={data.retained_earnings >= 0} />
-        <SummaryTile label="Total Equity" value={data.total_equity} accent />
-        <SummaryTile label="Total Liabilities" value={data.total_liabilities} />
+        <SummaryTile label="Shareholders Equity" value={shareholdersEquity} />
+        <SummaryTile label="Retained Earnings" value={retainedEarnings} positive={retainedEarnings >= 0} />
+        <SummaryTile label="Total Equity" value={totalEquity} accent />
+        <SummaryTile label="Total Liabilities" value={totalLiabilities} />
       </div>
 
       <div className="grid gap-5 md:grid-cols-2">
@@ -169,7 +176,7 @@ export default function BalanceSheetView({ data }: { data: BalanceSheet }) {
           <SectionLabel>Balance Sheet</SectionLabel>
           <SectionTitle>Assets</SectionTitle>
           <div className="mt-5 space-y-3">
-            {data.assets.map((item, i) => (
+            {assets.map((item, i) => (
               <div key={i} className="flex justify-between text-base">
                 <span className="text-text-secondary">{item.item}</span>
                 <span className="font-medium tabular-nums">
@@ -177,13 +184,13 @@ export default function BalanceSheetView({ data }: { data: BalanceSheet }) {
                 </span>
               </div>
             ))}
-            {data.assets.every((a) => a.amount == null) && (
+            {assets.every((a) => a.amount == null) && (
               <p className="text-sm italic text-text-muted">Asset values not yet recorded</p>
             )}
           </div>
           <div className="mt-5 flex justify-between border-t border-border pt-4 text-base font-bold">
             <span>Total Assets</span>
-            <span className="gradient-text"><Currency amount={data.total_assets} weight="bold" /></span>
+            <span className="gradient-text"><Currency amount={totalAssets} weight="bold" /></span>
           </div>
         </GlassCard>
 
@@ -191,7 +198,7 @@ export default function BalanceSheetView({ data }: { data: BalanceSheet }) {
           <SectionLabel>Liabilities & Equity</SectionLabel>
           <SectionTitle>Obligations & Equity</SectionTitle>
           <div className="mt-5 space-y-3">
-            {data.liabilities.map((item, i) => (
+            {liabilities.map((item, i) => (
               <div key={i} className="flex justify-between text-base">
                 <span className="text-text-secondary">{item.item}</span>
                 <span className="font-medium tabular-nums">
@@ -201,14 +208,14 @@ export default function BalanceSheetView({ data }: { data: BalanceSheet }) {
             ))}
             <div className="flex justify-between text-base">
               <span className="text-text-secondary">Retained Earnings (YTD P&L)</span>
-              <span className={data.retained_earnings >= 0 ? "text-green" : "text-red"}>
-                <Currency amount={data.retained_earnings} weight="semibold" />
+              <span className={retainedEarnings >= 0 ? "text-green" : "text-red"}>
+                <Currency amount={retainedEarnings} weight="semibold" />
               </span>
             </div>
           </div>
           <div className="mt-5 flex justify-between border-t border-border pt-4 text-base font-bold">
             <span>Total Equity</span>
-            <span className="gradient-text"><Currency amount={data.total_equity} weight="bold" /></span>
+            <span className="gradient-text"><Currency amount={totalEquity} weight="bold" /></span>
           </div>
         </GlassCard>
       </div>
@@ -221,9 +228,9 @@ export default function BalanceSheetView({ data }: { data: BalanceSheet }) {
             Shareholders equity from the balance sheet plus retained earnings from YTD net profit
           </p>
           <EquityCompositionChart
-            shareholdersEquity={data.shareholders_equity}
-            retainedEarnings={data.retained_earnings}
-            totalEquity={data.total_equity}
+            shareholdersEquity={shareholdersEquity}
+            retainedEarnings={retainedEarnings}
+            totalEquity={totalEquity}
           />
         </GlassCard>
       )}
