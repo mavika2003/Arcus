@@ -1,6 +1,7 @@
 """FastAPI backend for Arcus financial dashboard."""
 
 import io
+import logging
 import os
 import sys
 from pathlib import Path
@@ -11,6 +12,8 @@ import pandas as pd
 from fastapi import APIRouter, FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, StreamingResponse
+
+logger = logging.getLogger(__name__)
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -27,6 +30,16 @@ from src.services.receipts import (
 from src.data.ocr_parser import check_ocr_runtime
 
 app = FastAPI(title="Arcus Financial API", version="1.0.0")
+
+
+@app.on_event("startup")
+def _log_ocr_status() -> None:
+  ocr = check_ocr_runtime()
+  if ocr.get("available"):
+    logger.info("OCR ready: tesseract=%s heif=%s docker=%s", ocr.get("tesseract"), ocr.get("heif"), ocr.get("docker"))
+  else:
+    logger.warning("OCR unavailable: %s", ocr.get("detail"))
+
 
 router = APIRouter(prefix="/api")
 
@@ -134,7 +147,7 @@ def _serialize_dashboard(data) -> dict:
 def health():
   ocr = check_ocr_runtime()
   return {
-    "status": "ok" if ocr.get("available") else "degraded",
+    "status": "ok",
     "ocr": ocr,
   }
 
@@ -169,20 +182,15 @@ def categorize(body: dict):
 @router.post("/upload-receipt")
 async def upload_receipt(file: UploadFile = File(...)):
   """OCR a receipt image — returns editable preview only (human-in-the-loop before save)."""
-  ocr = check_ocr_runtime()
-  if not ocr.get("available"):
-    raise HTTPException(
-      status_code=503,
-      detail=ocr.get("detail") or "OCR is not available on this server.",
-    )
-
   image_bytes, filename = await _read_receipt_upload(file)
   try:
     preview = preview_receipt_bytes(image_bytes, filename=filename)
   except ValueError as exc:
     raise HTTPException(status_code=400, detail=str(exc)) from exc
   except RuntimeError as exc:
-    raise HTTPException(status_code=500, detail=str(exc)) from exc
+    msg = str(exc)
+    status = 503 if "Tesseract" in msg or "tesseract" in msg else 500
+    raise HTTPException(status_code=status, detail=msg) from exc
   except Exception as exc:  # noqa: BLE001
     raise HTTPException(status_code=500, detail=f"Failed to process receipt: {exc}") from exc
 

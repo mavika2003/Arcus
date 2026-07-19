@@ -6,9 +6,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     tesseract-ocr-ara \
     poppler-utils \
     libheif1 \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && tesseract --version
 
 ENV TESSERACT_CMD=/usr/bin/tesseract
+ENV PATH="/usr/bin:/usr/local/bin:${PATH}"
 
 WORKDIR /app
 COPY requirements.txt .

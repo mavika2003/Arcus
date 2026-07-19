@@ -163,33 +163,79 @@ def _register_heif_opener() -> bool:
         return False
 
 
+def _find_tesseract_binary() -> str | None:
+    """Locate a working Tesseract binary (Docker, Homebrew, or PATH)."""
+    import subprocess
+
+    candidates: list[str] = []
+    env_cmd = (os.getenv("TESSERACT_CMD") or "").strip()
+    if env_cmd:
+        candidates.append(env_cmd)
+
+    which = shutil.which("tesseract")
+    if which:
+        candidates.append(which)
+
+    candidates.extend([
+        "/usr/bin/tesseract",
+        "/usr/local/bin/tesseract",
+        "/opt/homebrew/bin/tesseract",
+    ])
+
+    seen: set[str] = set()
+    for path in candidates:
+        if not path or path in seen:
+            continue
+        seen.add(path)
+        if not os.path.isfile(path) or not os.access(path, os.X_OK):
+            continue
+        try:
+            subprocess.run(
+                [path, "--version"],
+                capture_output=True,
+                check=True,
+                timeout=10,
+            )
+            return path
+        except Exception:
+            continue
+    return None
+
+
 def check_ocr_runtime() -> dict[str, Any]:
     """Report whether OCR dependencies are available (for /health)."""
-    tesseract_path = os.getenv("TESSERACT_CMD") or shutil.which("tesseract")
+    tesseract_path = _find_tesseract_binary()
     heif = _register_heif_opener()
     ok = bool(tesseract_path)
     detail = None
     if not ok:
-        detail = "Tesseract binary not found. Set TESSERACT_CMD or install tesseract-ocr."
+        detail = (
+            "Tesseract binary not found. On Render, deploy with runtime: docker "
+            "(see render.yaml) so tesseract-ocr is installed in the image."
+        )
     return {
         "available": ok,
         "tesseract": tesseract_path,
         "heif": heif,
+        "docker": os.path.exists("/.dockerenv"),
+        "render": bool(os.getenv("RENDER")),
         "detail": detail,
     }
 
 
-def _configure_tesseract() -> None:
+def _configure_tesseract() -> str:
     import pytesseract
 
-    tesseract_cmd = os.getenv("TESSERACT_CMD") or shutil.which("tesseract")
-    if tesseract_cmd:
-        pytesseract.pytesseract.tesseract_cmd = tesseract_cmd
-        return
-    raise RuntimeError(
-        "Tesseract is not installed on the server. "
-        "Redeploy with the project Dockerfile (includes tesseract-ocr)."
-    )
+    tesseract_cmd = _find_tesseract_binary()
+    if not tesseract_cmd:
+        raise RuntimeError(
+            "Tesseract is not installed on the server. "
+            "On Render: set the web service Runtime to Docker and redeploy "
+            "(Dockerfile installs tesseract-ocr). "
+            "Or set TESSERACT_CMD=/usr/bin/tesseract in environment variables."
+        )
+    pytesseract.pytesseract.tesseract_cmd = tesseract_cmd
+    return tesseract_cmd
 
 
 def _load_image_from_bytes(image_bytes: bytes):
