@@ -28,6 +28,7 @@ from src.services.receipts import (
   preview_receipt_bytes,
 )
 from src.data.ocr_parser import check_ocr_runtime
+from src.services.scan_jobs import get_scan_job, start_scan_job
 
 app = FastAPI(title="Arcus Financial API", version="1.0.0")
 
@@ -186,20 +187,21 @@ def categorize(body: dict):
 
 @router.post("/upload-receipt")
 async def upload_receipt(file: UploadFile = File(...)):
-  """OCR a receipt image — returns editable preview only (human-in-the-loop before save)."""
+  """Start async OCR — returns job_id immediately; poll GET /upload-receipt/{job_id}."""
   image_bytes, filename = await _read_receipt_upload(file)
-  try:
-    preview = preview_receipt_bytes(image_bytes, filename=filename)
-  except ValueError as exc:
-    raise HTTPException(status_code=400, detail=str(exc)) from exc
-  except RuntimeError as exc:
-    msg = str(exc)
-    status = 503 if "Tesseract" in msg or "tesseract" in msg else 500
-    raise HTTPException(status_code=status, detail=msg) from exc
-  except Exception as exc:  # noqa: BLE001
-    raise HTTPException(status_code=500, detail=f"Failed to process receipt: {exc}") from exc
+  job_id = start_scan_job(image_bytes, filename=filename)
+  return {"job_id": job_id, "status": "processing"}
 
-  return _json_safe({"receipt": preview, "dashboard": None})
+
+@router.get("/upload-receipt/{job_id}")
+def upload_receipt_status(job_id: str):
+  """Poll OCR job started by POST /upload-receipt."""
+  result = get_scan_job(job_id)
+  if not result:
+    raise HTTPException(status_code=404, detail="Scan job not found or expired")
+  if result.get("status") == "failed":
+    raise HTTPException(status_code=400, detail=result.get("detail") or "OCR failed")
+  return _json_safe(result)
 
 
 @router.post("/receipts/confirm")

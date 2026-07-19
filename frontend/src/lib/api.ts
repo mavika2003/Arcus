@@ -45,8 +45,8 @@ async function readErrorDetail(res: Response, fallback: string): Promise<string>
   } catch {
     /* ignore */
   }
-  if (res.status === 504 || res.status === 408) {
-    return "OCR timed out — try a smaller JPG photo or wait for the server to wake up, then retry.";
+  if (res.status === 502 || res.status === 504 || res.status === 408) {
+    return "OCR timed out — wait a moment for the server to wake up, then retry. If this keeps happening, redeploy the latest API build.";
   }
   return `${fallback} (HTTP ${res.status})`;
 }
@@ -108,15 +108,50 @@ export async function scanReceipt(file: File) {
   const form = new FormData();
   form.append("file", compressed);
 
-  // Same-origin route handler → Render (avoids browser CORS / cross-site upload issues)
-  const res = await apiFetch("/api/upload-receipt", {
+  const startRes = await apiFetch("/api/upload-receipt", {
     method: "POST",
     body: form,
   });
-  if (!res.ok) {
-    throw new Error(await readErrorDetail(res, "Failed to scan receipt"));
+  if (!startRes.ok) {
+    throw new Error(await readErrorDetail(startRes, "Failed to start receipt scan"));
   }
-  return res.json();
+
+  const started = await startRes.json();
+  const jobId = started.job_id as string | undefined;
+
+  // Backward compat: sync response from older backend
+  if (!jobId && started.receipt) {
+    return { receipt: started.receipt, dashboard: started.dashboard ?? null };
+  }
+  if (!jobId) {
+    throw new Error("Invalid scan response from server");
+  }
+
+  // Poll until OCR completes (Render OCR can take 30–90s on free tier)
+  const maxAttempts = 45;
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    await new Promise((r) => setTimeout(r, 2000));
+
+    const pollRes = await apiFetch(`/api/upload-receipt/${jobId}`, {
+      cache: "no-store",
+    });
+    if (pollRes.status === 404) {
+      throw new Error("Scan job expired — please try again.");
+    }
+    if (!pollRes.ok) {
+      throw new Error(await readErrorDetail(pollRes, "Failed to scan receipt"));
+    }
+
+    const data = await pollRes.json();
+    if (data.status === "complete" && data.receipt) {
+      return { receipt: data.receipt, dashboard: data.dashboard ?? null };
+    }
+    if (data.status === "failed") {
+      throw new Error(data.detail || "OCR failed");
+    }
+  }
+
+  throw new Error("OCR is taking too long — please try again in a moment.");
 }
 
 /** @deprecated use scanReceipt — kept for compatibility */
