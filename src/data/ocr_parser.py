@@ -209,10 +209,20 @@ def check_ocr_runtime() -> dict[str, Any]:
     ok = bool(tesseract_path)
     detail = None
     if not ok:
-        detail = (
-            "Tesseract binary not found. On Render, deploy with runtime: docker "
-            "(see render.yaml) so tesseract-ocr is installed in the image."
-        )
+        on_render = bool(os.getenv("RENDER"))
+        in_docker = os.path.exists("/.dockerenv")
+        if on_render and not in_docker:
+            detail = (
+                "Render is using Native Python (not Docker). Tesseract requires Docker. "
+                "Fix: Render Dashboard → your API service → Settings → set Language/Runtime "
+                "to Docker, Dockerfile Path = ./Dockerfile, clear any custom Start Command, "
+                "then Manual Deploy (clear build cache)."
+            )
+        else:
+            detail = (
+                "Tesseract binary not found. Deploy with Docker (see Dockerfile + render.yaml) "
+                "or set TESSERACT_CMD to the tesseract binary path."
+            )
     return {
         "available": ok,
         "tesseract": tesseract_path,

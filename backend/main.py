@@ -36,9 +36,14 @@ app = FastAPI(title="Arcus Financial API", version="1.0.0")
 def _log_ocr_status() -> None:
   ocr = check_ocr_runtime()
   if ocr.get("available"):
-    logger.info("OCR ready: tesseract=%s heif=%s docker=%s", ocr.get("tesseract"), ocr.get("heif"), ocr.get("docker"))
+    logger.info(
+      "OCR ready: tesseract=%s heif=%s docker=%s",
+      ocr.get("tesseract"),
+      ocr.get("heif"),
+      ocr.get("docker"),
+    )
   else:
-    logger.warning("OCR unavailable: %s", ocr.get("detail"))
+    logger.error("OCR unavailable: %s", ocr.get("detail"))
 
 
 router = APIRouter(prefix="/api")

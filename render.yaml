@@ -1,4 +1,7 @@
 services:
+  # IMPORTANT: OCR requires Docker (tesseract-ocr is installed in the Dockerfile).
+  # If you see "OCR unavailable" in logs, your Render service is on Native Python —
+  # switch Settings → Runtime/Language → Docker and redeploy.
   - type: web
     name: arcus-api
     runtime: docker
