@@ -12,6 +12,9 @@ services:
     envVars:
       - key: TESSERACT_CMD
         value: /usr/bin/tesseract
+      # Optional but strongly recommended — free key at https://ocr.space/ocrapi
+      - key: OCR_SPACE_API_KEY
+        sync: false
       - key: FRONTEND_URL
         sync: false
       - key: ALLOWED_ORIGINS

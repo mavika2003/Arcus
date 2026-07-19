@@ -78,7 +78,7 @@ def parsed_to_preview(parsed: ParsedReceipt, filename: str | None = None) -> dic
 
 def preview_receipt_bytes(image_bytes: bytes, filename: str | None = None) -> dict[str, Any]:
     """OCR only — returns editable preview, does not save."""
-    parsed = process_receipt_image(image_bytes)
+    parsed = process_receipt_image(image_bytes, filename=filename)
     return parsed_to_preview(parsed, filename=filename)
 
 

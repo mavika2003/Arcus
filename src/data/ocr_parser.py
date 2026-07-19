@@ -145,8 +145,13 @@ def _score_ocr_text(text: str) -> int:
 
 
 def _is_constrained_runtime() -> bool:
-    """Render and similar hosts have less RAM — use a lighter OCR path."""
-    return bool(os.getenv("RENDER") or os.getenv("ARCUS_FAST_OCR"))
+    """Opt-in ultra-fast OCR (skip escalation). Prefer OCR_SPACE_API_KEY in production."""
+    return bool(os.getenv("ARCUS_FAST_OCR"))
+
+
+def _good_enough_score(score: int) -> bool:
+    """Stop OCR attempts once we clearly have a supermarket receipt."""
+    return score >= 45
 
 
 def _register_heif_opener() -> bool:
@@ -223,13 +228,21 @@ def check_ocr_runtime() -> dict[str, Any]:
                 "Tesseract binary not found. Deploy with Docker (see Dockerfile + render.yaml) "
                 "or set TESSERACT_CMD to the tesseract binary path."
             )
+    try:
+        from src.services.cloud_ocr import cloud_ocr_configured
+        cloud = cloud_ocr_configured()
+    except Exception:  # noqa: BLE001
+        cloud = False
+
     return {
-        "available": ok,
+        "available": ok or cloud,
         "tesseract": tesseract_path,
+        "cloud_ocr": cloud,
+        "engine": "ocr.space" if cloud else ("tesseract" if ok else None),
         "heif": heif,
         "docker": os.path.exists("/.dockerenv"),
         "render": bool(os.getenv("RENDER")),
-        "detail": detail,
+        "detail": detail if not cloud else None,
     }
 
 
@@ -280,7 +293,7 @@ def _load_image_from_bytes(image_bytes: bytes):
         image = image.convert("RGB")
 
     w, h = image.size
-    max_edge = 2400 if _is_constrained_runtime() else 3200
+    max_edge = 2800 if _is_constrained_runtime() else 3200
     if max(w, h) > max_edge:
         scale = max_edge / max(w, h)
         image = image.resize((int(w * scale), int(h * scale)), Image.Resampling.LANCZOS)
@@ -288,8 +301,8 @@ def _load_image_from_bytes(image_bytes: bytes):
     return image
 
 
-def _preprocess_variants(image) -> list:
-    """Generate multiple preprocessed images for OCR attempts."""
+def _preprocess_variants(image, *, escalate: bool = False) -> list:
+    """Generate preprocessed images. Fast path = 1 variant; escalate adds more."""
     from PIL import Image, ImageEnhance, ImageFilter, ImageOps
 
     variants = []
@@ -301,18 +314,16 @@ def _preprocess_variants(image) -> list:
     gray = ImageOps.grayscale(image)
     gray = ImageOps.autocontrast(gray)
 
-    # Standard contrast
+    # Standard contrast — best first pass for phone photos
     v1 = ImageEnhance.Contrast(gray).enhance(2.0)
     v1 = v1.filter(ImageFilter.SHARPEN)
     variants.append(v1)
 
-    if not _is_constrained_runtime():
-        # High contrast + threshold (thermal receipt friendly)
+    if escalate and not _is_constrained_runtime():
         v2 = ImageEnhance.Contrast(gray).enhance(2.8)
         v2 = v2.point(lambda p: 255 if p > 140 else 0)
         variants.append(v2)
 
-        # Slightly softer — helps when photo is overexposed
         v3 = ImageEnhance.Brightness(gray).enhance(1.1)
         v3 = ImageEnhance.Contrast(v3).enhance(1.8)
         variants.append(v3)
@@ -320,8 +331,25 @@ def _preprocess_variants(image) -> list:
     return variants
 
 
-def extract_text_from_image(image_bytes: bytes) -> str:
-    """Run Tesseract OCR with multiple preprocess + config attempts; pick best text."""
+def extract_text_from_image(image_bytes: bytes, filename: str | None = None) -> str:
+    """Extract receipt text — cloud OCR if configured, else adaptive Tesseract."""
+    # Prefer cloud OCR on production (fast + accurate on WhatsApp/phone photos)
+    try:
+        from src.services.cloud_ocr import cloud_ocr_configured, extract_text_ocr_space
+
+        if cloud_ocr_configured():
+            try:
+                return extract_text_ocr_space(image_bytes, filename=filename)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Cloud OCR failed, falling back to Tesseract: %s", exc)
+    except ImportError:
+        pass
+
+    return _extract_text_tesseract(image_bytes)
+
+
+def _extract_text_tesseract(image_bytes: bytes) -> str:
+    """Adaptive Tesseract: try best config first, escalate only if needed."""
     try:
         import pytesseract
     except ImportError as exc:
@@ -333,36 +361,54 @@ def extract_text_from_image(image_bytes: bytes) -> str:
     _configure_tesseract()
     image = _load_image_from_bytes(image_bytes)
 
-    # Receipt photos are often rotated — try original + 90° if tall
-    orientations = [image]
-    if not _is_constrained_runtime() and image.height > image.width * 1.2:
-        orientations.append(image.rotate(90, expand=True))
+    # Auto-orient once (cheap) instead of trying every rotation
+    try:
+        osd = pytesseract.image_to_osd(image, config="--psm 0")
+        rot = re.search(r"Rotate:\s*(\d+)", osd)
+        if rot:
+            angle = int(rot.group(1)) % 360
+            if angle:
+                image = image.rotate(360 - angle, expand=True)
+    except Exception:  # noqa: BLE001
+        # Tall receipts are usually portrait — only rotate if clearly landscape
+        if image.width > image.height * 1.2:
+            image = image.rotate(90, expand=True)
 
-    configs = [("eng", "--oem 3 --psm 6")]
-    if not _is_constrained_runtime():
-        configs.extend([
-            ("eng", "--oem 3 --psm 4"),   # single column
-            ("eng", "--oem 3 --psm 11"),  # sparse text
-        ])
+    # Phase 1 — fast: 1 preprocess × 2 PSM configs (~2–8s locally, ~15–40s on free Render)
+    attempts: list[tuple[bool, str, str]] = [
+        (False, "eng", "--oem 3 --psm 6"),
+        (False, "eng", "--oem 3 --psm 4"),
+    ]
+    # Phase 2 — only if phase 1 is weak
+    escalate_attempts: list[tuple[bool, str, str]] = [
+        (True, "eng", "--oem 3 --psm 6"),
+        (True, "eng", "--oem 3 --psm 11"),
+        (False, "eng+ara", "--oem 3 --psm 6"),
+    ]
 
     best_text = ""
     best_score = -1
     last_error: Exception | None = None
 
-    for oriented in orientations:
-        for variant in _preprocess_variants(oriented):
-            for lang, config in configs:
+    def _run(phase: list[tuple[bool, str, str]]) -> None:
+        nonlocal best_text, best_score, last_error
+        for escalate, lang, config in phase:
+            for variant in _preprocess_variants(image, escalate=escalate):
                 try:
                     text = pytesseract.image_to_string(variant, lang=lang, config=config)
                     score = _score_ocr_text(text)
                     if score > best_score:
                         best_score = score
                         best_text = text
-                    if _is_constrained_runtime() and score >= 25:
-                        return best_text
+                    if _good_enough_score(score):
+                        return
                 except Exception as exc:  # noqa: BLE001
                     last_error = exc
                     logger.warning("OCR attempt failed (%s %s): %s", lang, config, exc)
+
+    _run(attempts)
+    if not _good_enough_score(best_score) and not _is_constrained_runtime():
+        _run(escalate_attempts)
 
     if not best_text.strip() and last_error:
         raise RuntimeError(
@@ -376,24 +422,22 @@ def _guess_vendor(lines: list[str]) -> str | None:
     """Pick the store name from header lines — prefer English supermarket names."""
     candidates: list[tuple[int, str]] = []
 
-    for i, line in enumerate(lines[:20]):
-        raw = line.strip()
+    def _score_line(raw: str, i: int) -> int | None:
         if len(raw) < 4:
-            continue
+            return None
         if _HEADER_SKIP.search(raw):
-            continue
+            return None
         if re.fullmatch(r"[\d\s./\-#*]+", raw):
-            continue
+            return None
 
-        # Skip lines that are mostly non-Latin (Arabic OCR noise)
         latin_chars = sum(1 for c in raw if c.isascii() and c.isalpha())
         if latin_chars < 4 and not _VENDOR_HINTS.search(raw):
-            continue
+            return None
 
         cleaned = re.sub(r"[^\w\s&.'\-]", " ", raw).strip()
         cleaned = re.sub(r"\s+", " ", cleaned)
         if len(cleaned) < 4:
-            continue
+            return None
 
         score = 0
         if _VENDOR_HINTS.search(cleaned):
@@ -403,7 +447,30 @@ def _guess_vendor(lines: list[str]) -> str | None:
         if i < 5:
             score += 8 - i
         score += min(len(cleaned), 40)
-        candidates.append((score, cleaned))
+        return score
+
+    for i, line in enumerate(lines[:20]):
+        raw = line.strip()
+        score = _score_line(raw, i)
+        if score is not None:
+            cleaned = re.sub(r"[^\w\s&.'\-]", " ", raw).strip()
+            cleaned = re.sub(r"\s+", " ", cleaned)
+            candidates.append((score, cleaned))
+
+        # OCR often splits store names across two header lines
+        if i + 1 < min(12, len(lines)):
+            nxt = lines[i + 1].strip()
+            if (
+                (_VENDOR_HINTS.search(raw) or _VENDOR_HINTS.search(nxt))
+                and not _HEADER_SKIP.search(nxt)
+                and not _parse_date_text(nxt)
+            ):
+                combined = re.sub(r"\s+", " ", f"{raw} {nxt}").strip()
+                combo_score = _score_line(combined, i)
+                if combo_score is not None:
+                    cleaned = re.sub(r"[^\w\s&.'\-]", " ", combined).strip()
+                    cleaned = re.sub(r"\s+", " ", cleaned)
+                    candidates.append((combo_score + 5, cleaned[:120]))
 
     if not candidates:
         return None
@@ -606,6 +673,60 @@ def _extract_line_items(text: str) -> list[ReceiptLineItem]:
     return items
 
 
+def _extract_line_items_fallback(text: str) -> list[ReceiptLineItem]:
+    """Fallback when barcode rows are missing — pair product names with trailing prices."""
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    items: list[ReceiptLineItem] = []
+    seen: set[str] = set()
+
+    skip_zone = re.compile(
+        r"taxable\s*amount|bill\s*amount|bal\.?\s*amount|thank\s*you|keep\s*bill|"
+        r"no\s*cash|tax\s*#|rate\s*taxable|^\*{2,}\s*visa|product\s*qty|barcode",
+        re.I,
+    )
+
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if skip_zone.search(line):
+            i += 1
+            continue
+
+        price_match = re.search(r"([\d,]+\.\d{2})\s*$", line)
+        if price_match and _is_product_name_line(re.sub(r"[\d,]+\.\d{2}\s*$", "", line)):
+            name = _clean_product_name(re.sub(r"[\d,]+\.\d{2}\s*$", "", line))
+            amount = _parse_amount(price_match.group(1))
+            if name and amount and 0 < amount < 500:
+                key = f"{name}:{amount}"
+                if key not in seen:
+                    seen.add(key)
+                    items.append(ReceiptLineItem(name=name, amount=amount, unit_price=amount))
+            i += 1
+            continue
+
+        if _is_product_name_line(line) and i + 1 < len(lines):
+            nxt = lines[i + 1]
+            m = re.fullmatch(r"([\d,]+\.\d{2})", nxt) or re.search(
+                r"^([\d,]+\.\d{2})\s*$", nxt
+            )
+            if m and not skip_zone.search(nxt):
+                amount = _parse_amount(m.group(1))
+                if amount and 0 < amount < 500:
+                    name = _clean_product_name(line)
+                    key = f"{name}:{amount}"
+                    if key not in seen:
+                        seen.add(key)
+                        items.append(ReceiptLineItem(name=name, amount=amount, unit_price=amount))
+                    i += 2
+                    continue
+
+        i += 1
+        if len(items) >= 40:
+            break
+
+    return items
+
+
 def _line_items_subtotal(items: list[ReceiptLineItem]) -> float:
     return sum(float(i.amount or 0) for i in items)
 
@@ -653,6 +774,8 @@ def parse_receipt_text(raw_text: str) -> ParsedReceipt:
         receipt.currency = "AED"
 
     receipt.line_items = _extract_line_items(raw_text)
+    if not receipt.line_items:
+        receipt.line_items = _extract_line_items_fallback(raw_text)
 
     # Reconcile total with line items when bill total missing
     items_sum = _line_items_subtotal(receipt.line_items)
@@ -698,7 +821,7 @@ def parse_receipt_text(raw_text: str) -> ParsedReceipt:
     return receipt
 
 
-def process_receipt_image(image_bytes: bytes) -> ParsedReceipt:
+def process_receipt_image(image_bytes: bytes, filename: str | None = None) -> ParsedReceipt:
     """Full OCR pipeline: image bytes → structured receipt."""
-    text = extract_text_from_image(image_bytes)
+    text = extract_text_from_image(image_bytes, filename=filename)
     return parse_receipt_text(text)

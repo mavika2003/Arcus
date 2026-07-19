@@ -102,10 +102,10 @@ export default function ReceiptUpload({ onDataLoaded, onError, onViewPl }: Recei
               className="btn-primary w-full justify-center disabled:opacity-50"
             >
               {scanning ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
-              {scanning ? "Scanning with OCR… (up to 1 min)" : "Scan Receipt"}
+              {scanning ? "Scanning… (usually a few seconds)" : "Scan Receipt"}
             </button>
             <p className="text-xs text-text-muted">
-              Human review required · OCR may take up to a minute on free hosting · use JPG under 12&nbsp;MB
+              Human review required · use a clear JPG of the full receipt · WhatsApp photos work best with cloud OCR enabled
             </p>
           </div>
         </div>
