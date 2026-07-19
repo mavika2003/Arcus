@@ -47,8 +47,9 @@ export default function Dashboard() {
     try {
       const result = await fetchDashboard();
       setData(result);
-    } catch {
-      setError("Could not connect to API. Start the backend with: uvicorn backend.main:app --reload");
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Could not connect to API.";
+      setError(msg);
       setData(null);
     } finally {
       setLoading(false);

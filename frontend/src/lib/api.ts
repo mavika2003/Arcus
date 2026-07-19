@@ -1,35 +1,39 @@
 /**
- * API base URL for fetch calls.
- * Production uses same-origin `/api/...` proxied to Render via next.config rewrites.
- * Set API_URL on Vercel (or NEXT_PUBLIC_API_URL for direct cross-origin calls).
+ * Browser: always same-origin `/api/...` (proxied to Render via next.config rewrites).
+ * Vercel: set API_URL=https://your-app.onrender.com and redeploy after changing it.
  */
-function resolveApiBase(): string {
-  const direct =
-    process.env.NEXT_PUBLIC_API_URL ??
-    process.env.NEXT_PUBLIC_BACKEND_URL;
+function apiUrl(path: string): string {
+  // Client — never call Render directly (avoids CORS / "Failed to fetch")
+  if (typeof window !== "undefined") return path;
 
-  if (direct) return direct.replace(/\/$/, "");
-
-  // Same-origin: Vercel/next dev rewrites forward /api → backend
-  if (typeof window !== "undefined") return "";
-
-  // Server components / SSR fallback during build
-  return (
+  // SSR / server
+  const base = (
     process.env.API_URL ??
     process.env.NEXT_PUBLIC_API_URL ??
+    process.env.NEXT_PUBLIC_BACKEND_URL ??
     "http://127.0.0.1:8000"
   ).replace(/\/$/, "");
+  return `${base}${path}`;
 }
 
-function apiUrl(path: string): string {
-  const base = resolveApiBase();
-  return base ? `${base}${path}` : path;
+async function apiFetch(path: string, init?: RequestInit): Promise<Response> {
+  const url = apiUrl(path);
+  try {
+    return await fetch(url, init);
+  } catch (err) {
+    const hint =
+      typeof window !== "undefined"
+        ? " Check Vercel → Settings → Environment Variables: API_URL = your Render URL (e.g. https://arcus-api-sa25.onrender.com), then redeploy."
+        : "";
+    const msg = err instanceof Error ? err.message : "Network error";
+    throw new Error(`Failed to reach API (${url}): ${msg}.${hint}`);
+  }
 }
 
 export { formatCurrency, formatCurrencyTable, formatCurrencyCompact, chartCurrencyHover, DIRHAM_UNICODE } from "@/lib/currency";
 
 export async function fetchDashboard() {
-  const res = await fetch(apiUrl("/api/dashboard"), { cache: "no-store" });
+  const res = await apiFetch("/api/dashboard", { cache: "no-store" });
   if (!res.ok) throw new Error("Failed to load dashboard data");
   return res.json();
 }
@@ -39,7 +43,7 @@ export async function uploadDashboard(salesFile?: File, plFile?: File) {
   if (salesFile) form.append("sales_file", salesFile);
   if (plFile) form.append("pl_file", plFile);
 
-  const res = await fetch(apiUrl("/api/dashboard/upload"), {
+  const res = await apiFetch("/api/dashboard/upload", {
     method: "POST",
     body: form,
   });
@@ -48,7 +52,7 @@ export async function uploadDashboard(salesFile?: File, plFile?: File) {
 }
 
 export async function categorizeExpense(description: string) {
-  const res = await fetch(apiUrl("/api/categorize"), {
+  const res = await apiFetch("/api/categorize", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ description }),
@@ -61,7 +65,7 @@ export async function scanReceipt(file: File) {
   const form = new FormData();
   form.append("file", file);
 
-  const res = await fetch(apiUrl("/api/upload-receipt"), {
+  const res = await apiFetch("/api/upload-receipt", {
     method: "POST",
     body: form,
   });
@@ -82,7 +86,7 @@ export async function scanReceipt(file: File) {
 export const uploadReceipt = scanReceipt;
 
 export async function confirmReceipt(receipt: import("@/lib/types").ReceiptPreview) {
-  const res = await fetch(apiUrl("/api/receipts/confirm"), {
+  const res = await apiFetch("/api/receipts/confirm", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(receipt),
@@ -102,7 +106,7 @@ export async function confirmReceipt(receipt: import("@/lib/types").ReceiptPrevi
 
 export async function deleteLatestReceipt(month?: string) {
   const q = month ? `?month=${encodeURIComponent(month)}` : "";
-  const res = await fetch(apiUrl(`/api/receipts/latest${q}`), {
+  const res = await apiFetch(`/api/receipts/latest${q}`, {
     method: "DELETE",
   });
   if (!res.ok) {
@@ -119,7 +123,7 @@ export async function deleteLatestReceipt(month?: string) {
 }
 
 export async function fetchReceipts() {
-  const res = await fetch(apiUrl("/api/receipts"), { cache: "no-store" });
+  const res = await apiFetch("/api/receipts", { cache: "no-store" });
   if (!res.ok) throw new Error("Failed to load receipts");
   return res.json();
 }
