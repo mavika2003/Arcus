@@ -105,7 +105,7 @@ export default function ReceiptUpload({ onDataLoaded, onError, onViewPl }: Recei
               {scanning ? "Scanning with OCR…" : "Scan Receipt"}
             </button>
             <p className="text-xs text-text-muted">
-              Human review required · edit fields in the popup before accepting
+              Human review required · OCR may take up to a minute on free hosting · use JPG under 12&nbsp;MB
             </p>
           </div>
         </div>
