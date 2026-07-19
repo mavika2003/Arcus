@@ -2,13 +2,20 @@
 
 from __future__ import annotations
 
+import logging
+import os
 import re
+import shutil
 from dataclasses import asdict, dataclass, field
 from datetime import date, datetime
 from io import BytesIO
 from typing import Any
 
 from src.services.categorizer import categorize_expense
+
+logger = logging.getLogger(__name__)
+
+_HEIF_REGISTERED = False
 
 
 @dataclass
@@ -137,6 +144,94 @@ def _score_ocr_text(text: str) -> int:
     return score
 
 
+def _is_constrained_runtime() -> bool:
+    """Render and similar hosts have less RAM — use a lighter OCR path."""
+    return bool(os.getenv("RENDER") or os.getenv("ARCUS_FAST_OCR"))
+
+
+def _register_heif_opener() -> bool:
+    global _HEIF_REGISTERED
+    if _HEIF_REGISTERED:
+        return True
+    try:
+        from pillow_heif import register_heif_opener
+        register_heif_opener()
+        _HEIF_REGISTERED = True
+        return True
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("HEIF opener unavailable: %s", exc)
+        return False
+
+
+def check_ocr_runtime() -> dict[str, Any]:
+    """Report whether OCR dependencies are available (for /health)."""
+    tesseract_path = os.getenv("TESSERACT_CMD") or shutil.which("tesseract")
+    heif = _register_heif_opener()
+    ok = bool(tesseract_path)
+    detail = None
+    if not ok:
+        detail = "Tesseract binary not found. Set TESSERACT_CMD or install tesseract-ocr."
+    return {
+        "available": ok,
+        "tesseract": tesseract_path,
+        "heif": heif,
+        "detail": detail,
+    }
+
+
+def _configure_tesseract() -> None:
+    import pytesseract
+
+    tesseract_cmd = os.getenv("TESSERACT_CMD") or shutil.which("tesseract")
+    if tesseract_cmd:
+        pytesseract.pytesseract.tesseract_cmd = tesseract_cmd
+        return
+    raise RuntimeError(
+        "Tesseract is not installed on the server. "
+        "Redeploy with the project Dockerfile (includes tesseract-ocr)."
+    )
+
+
+def _load_image_from_bytes(image_bytes: bytes):
+    """Open receipt bytes as a PIL image (JPEG/PNG/WEBP/HEIC)."""
+    from PIL import Image, UnidentifiedImageError
+
+    _register_heif_opener()
+
+    if not image_bytes:
+        raise ValueError("Empty image file")
+
+    try:
+        image = Image.open(BytesIO(image_bytes))
+        image.load()
+    except UnidentifiedImageError as exc:
+        header = image_bytes[:32]
+        if b"ftyp" in header and any(
+            marker in header for marker in (b"heic", b"heix", b"mif1", b"hevc")
+        ):
+            raise ValueError(
+                "HEIC/HEIF photos are not supported on this server. "
+                "On iPhone: Settings → Camera → Formats → Most Compatible, then retake, "
+                "or export/save the photo as JPEG before uploading."
+            ) from exc
+        raise ValueError(
+            "Could not read image. Upload a JPG, PNG, or WEBP photo of the receipt."
+        ) from exc
+    except Exception as exc:
+        raise ValueError(f"Could not read image: {exc}") from exc
+
+    if image.mode not in ("RGB", "L"):
+        image = image.convert("RGB")
+
+    w, h = image.size
+    max_edge = 2400 if _is_constrained_runtime() else 3200
+    if max(w, h) > max_edge:
+        scale = max_edge / max(w, h)
+        image = image.resize((int(w * scale), int(h * scale)), Image.Resampling.LANCZOS)
+
+    return image
+
+
 def _preprocess_variants(image) -> list:
     """Generate multiple preprocessed images for OCR attempts."""
     from PIL import Image, ImageEnhance, ImageFilter, ImageOps
@@ -155,15 +250,16 @@ def _preprocess_variants(image) -> list:
     v1 = v1.filter(ImageFilter.SHARPEN)
     variants.append(v1)
 
-    # High contrast + threshold (thermal receipt friendly)
-    v2 = ImageEnhance.Contrast(gray).enhance(2.8)
-    v2 = v2.point(lambda p: 255 if p > 140 else 0)
-    variants.append(v2)
+    if not _is_constrained_runtime():
+        # High contrast + threshold (thermal receipt friendly)
+        v2 = ImageEnhance.Contrast(gray).enhance(2.8)
+        v2 = v2.point(lambda p: 255 if p > 140 else 0)
+        variants.append(v2)
 
-    # Slightly softer — helps when photo is overexposed
-    v3 = ImageEnhance.Brightness(gray).enhance(1.1)
-    v3 = ImageEnhance.Contrast(v3).enhance(1.8)
-    variants.append(v3)
+        # Slightly softer — helps when photo is overexposed
+        v3 = ImageEnhance.Brightness(gray).enhance(1.1)
+        v3 = ImageEnhance.Contrast(v3).enhance(1.8)
+        variants.append(v3)
 
     return variants
 
@@ -171,7 +267,6 @@ def _preprocess_variants(image) -> list:
 def extract_text_from_image(image_bytes: bytes) -> str:
     """Run Tesseract OCR with multiple preprocess + config attempts; pick best text."""
     try:
-        from PIL import Image
         import pytesseract
     except ImportError as exc:
         raise RuntimeError(
@@ -179,25 +274,20 @@ def extract_text_from_image(image_bytes: bytes) -> str:
             "(and the system Tesseract binary)."
         ) from exc
 
-    import os
-    tesseract_cmd = os.getenv("TESSERACT_CMD")
-    if tesseract_cmd:
-        pytesseract.pytesseract.tesseract_cmd = tesseract_cmd
-
-    image = Image.open(BytesIO(image_bytes))
-    if image.mode not in ("RGB", "L"):
-        image = image.convert("RGB")
+    _configure_tesseract()
+    image = _load_image_from_bytes(image_bytes)
 
     # Receipt photos are often rotated — try original + 90° if tall
     orientations = [image]
-    if image.height > image.width * 1.2:
+    if not _is_constrained_runtime() and image.height > image.width * 1.2:
         orientations.append(image.rotate(90, expand=True))
 
-    configs = [
-        ("eng", "--oem 3 --psm 6"),   # block of text — best for thermal receipts
-        ("eng", "--oem 3 --psm 4"),   # single column
-        ("eng", "--oem 3 --psm 11"),  # sparse text
-    ]
+    configs = [("eng", "--oem 3 --psm 6")]
+    if not _is_constrained_runtime():
+        configs.extend([
+            ("eng", "--oem 3 --psm 4"),   # single column
+            ("eng", "--oem 3 --psm 11"),  # sparse text
+        ])
 
     best_text = ""
     best_score = -1
@@ -212,13 +302,16 @@ def extract_text_from_image(image_bytes: bytes) -> str:
                     if score > best_score:
                         best_score = score
                         best_text = text
+                    if _is_constrained_runtime() and score >= 25:
+                        return best_text
                 except Exception as exc:  # noqa: BLE001
                     last_error = exc
+                    logger.warning("OCR attempt failed (%s %s): %s", lang, config, exc)
 
     if not best_text.strip() and last_error:
         raise RuntimeError(
             f"Tesseract OCR failed: {last_error}. "
-            "Install tesseract: brew install tesseract"
+            "Ensure tesseract-ocr is installed on the server."
         )
     return best_text
 

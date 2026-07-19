@@ -76,7 +76,7 @@ export default function ReceiptUpload({ onDataLoaded, onError, onViewPl }: Recei
         <div className="mt-5 grid gap-5 md:grid-cols-2">
           <label className="block">
             <span className="mb-2 block text-sm font-medium text-text-secondary">
-              Receipt image (.jpg, .png, .webp)
+              Receipt image (.jpg, .png, .webp — HEIC if supported)
             </span>
             <div className="flex items-center gap-3 rounded-xl border-2 border-dashed border-border px-4 py-6 transition-colors hover:border-accent/40">
               <Camera className="h-5 w-5 shrink-0 text-text-muted" />

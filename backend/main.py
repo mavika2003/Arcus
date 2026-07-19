@@ -24,6 +24,7 @@ from src.services.receipts import (
   load_all_receipts,
   preview_receipt_bytes,
 )
+from src.data.ocr_parser import check_ocr_runtime
 
 app = FastAPI(title="Arcus Financial API", version="1.0.0")
 
@@ -131,7 +132,11 @@ def _serialize_dashboard(data) -> dict:
 
 @router.get("/health")
 def health():
-  return {"status": "ok"}
+  ocr = check_ocr_runtime()
+  return {
+    "status": "ok" if ocr.get("available") else "degraded",
+    "ocr": ocr,
+  }
 
 
 @router.get("/dashboard")
@@ -164,9 +169,18 @@ def categorize(body: dict):
 @router.post("/upload-receipt")
 async def upload_receipt(file: UploadFile = File(...)):
   """OCR a receipt image — returns editable preview only (human-in-the-loop before save)."""
+  ocr = check_ocr_runtime()
+  if not ocr.get("available"):
+    raise HTTPException(
+      status_code=503,
+      detail=ocr.get("detail") or "OCR is not available on this server.",
+    )
+
   image_bytes, filename = await _read_receipt_upload(file)
   try:
     preview = preview_receipt_bytes(image_bytes, filename=filename)
+  except ValueError as exc:
+    raise HTTPException(status_code=400, detail=str(exc)) from exc
   except RuntimeError as exc:
     raise HTTPException(status_code=500, detail=str(exc)) from exc
   except Exception as exc:  # noqa: BLE001
