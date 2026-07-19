@@ -84,6 +84,10 @@ def preview_receipt_bytes(image_bytes: bytes, filename: str | None = None) -> di
 
 def confirm_receipt_record(data: dict[str, Any]) -> dict[str, Any]:
     """Persist user-confirmed (possibly edited) receipt data."""
+    import logging
+
+    logger = logging.getLogger(__name__)
+
     pl_category = data.get("pl_category") or map_to_pl_category(data.get("category") or "Uncategorized")
     category = data.get("category") or pl_category
 
@@ -106,9 +110,20 @@ def confirm_receipt_record(data: dict[str, Any]) -> dict[str, Any]:
         "source_filename": data.get("source_filename"),
     }
 
+    persisted_to = "local"
     if USE_SUPABASE:
-        from src.data.supabase_loaders import insert_receipt_to_supabase
-        stored = insert_receipt_to_supabase(record)
+        try:
+            from src.data.supabase_loaders import insert_receipt_to_supabase
+            stored = insert_receipt_to_supabase(record)
+            persisted_to = "supabase"
+        except Exception as exc:  # noqa: BLE001
+            # Common on first deploy: schema.sql receipt_transactions not applied yet
+            logger.warning("Supabase receipt insert failed, using local store: %s", exc)
+            stored = save_receipt_local(record)
+            record.setdefault("warnings", []).append(
+                "Saved locally — create public.receipt_transactions in Supabase "
+                "(run supabase/schema.sql) for cloud persistence."
+            )
     else:
         stored = save_receipt_local(record)
 
@@ -120,7 +135,7 @@ def confirm_receipt_record(data: dict[str, Any]) -> dict[str, Any]:
             "description", "line_items",
         )},
         "warnings": record.get("warnings") or [],
-        "persisted_to": "supabase" if USE_SUPABASE else "local",
+        "persisted_to": persisted_to,
     }
 
 
