@@ -76,4 +76,53 @@ export interface DashboardData {
   balance_sheet: BalanceSheet;
   warnings: string[];
   transaction_count: number;
+  receipts?: ReceiptSummary[];
+  receipt_count?: number;
+  receipt_cash_outflow?: number;
+}
+
+export interface ReceiptLineItem {
+  name: string;
+  quantity?: number;
+  unit_price?: number | null;
+  amount?: number | null;
+  barcode?: string | null;
+}
+
+export interface ReceiptSummary {
+  id?: string | number;
+  vendor_name?: string | null;
+  transaction_date?: string | null;
+  total_amount?: number | null;
+  category?: string;
+  pl_category?: string;
+  currency?: string;
+  payment_method?: string | null;
+}
+
+export interface ReceiptPreview {
+  vendor_name?: string | null;
+  transaction_date?: string | null;
+  total_amount: number;
+  currency?: string;
+  tax_amount?: number | null;
+  taxable_amount?: number | null;
+  payment_method?: string | null;
+  category?: string;
+  pl_category?: string;
+  category_confidence?: number;
+  description?: string | null;
+  line_items?: ReceiptLineItem[];
+  warnings?: string[];
+  raw_ocr_text?: string | null;
+  source_filename?: string | null;
+}
+
+export interface ReceiptUploadResult {
+  receipt: ReceiptPreview & {
+    id?: string | number;
+    persisted_to?: string;
+    raw_text_preview?: string;
+  };
+  dashboard: DashboardData | null;
 }

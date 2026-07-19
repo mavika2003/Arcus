@@ -1,0 +1,10 @@
+.venv
+__pycache__
+*.pyc
+.git
+frontend/node_modules
+frontend/.next
+data/receipts/*.json
+*.xlsx
+.env
+backend/.env

@@ -42,6 +42,73 @@ export async function categorizeExpense(description: string) {
   return res.json();
 }
 
+export async function scanReceipt(file: File) {
+  const form = new FormData();
+  form.append("file", file);
+
+  const res = await fetch(`${API_BASE}/api/upload-receipt`, {
+    method: "POST",
+    body: form,
+  });
+  if (!res.ok) {
+    let detail = "Failed to scan receipt";
+    try {
+      const body = await res.json();
+      detail = body.detail || detail;
+    } catch {
+      /* ignore */
+    }
+    throw new Error(detail);
+  }
+  return res.json();
+}
+
+/** @deprecated use scanReceipt — kept for compatibility */
+export const uploadReceipt = scanReceipt;
+
+export async function confirmReceipt(receipt: import("@/lib/types").ReceiptPreview) {
+  const res = await fetch(`${API_BASE}/api/receipts/confirm`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(receipt),
+  });
+  if (!res.ok) {
+    let detail = "Failed to save receipt";
+    try {
+      const body = await res.json();
+      detail = body.detail || detail;
+    } catch {
+      /* ignore */
+    }
+    throw new Error(detail);
+  }
+  return res.json();
+}
+
+export async function deleteLatestReceipt(month?: string) {
+  const q = month ? `?month=${encodeURIComponent(month)}` : "";
+  const res = await fetch(`${API_BASE}/api/receipts/latest${q}`, {
+    method: "DELETE",
+  });
+  if (!res.ok) {
+    let detail = "Failed to delete receipt";
+    try {
+      const body = await res.json();
+      detail = body.detail || detail;
+    } catch {
+      /* ignore */
+    }
+    throw new Error(detail);
+  }
+  return res.json();
+}
+
+export async function fetchReceipts() {
+  const res = await fetch(`${API_BASE}/api/receipts`, { cache: "no-store" });
+  if (!res.ok) throw new Error("Failed to load receipts");
+  return res.json();
+}
+
 export function exportUrl(type: "excel" | "pdf"): string {
   return `${API_BASE}/api/export/${type}`;
 }

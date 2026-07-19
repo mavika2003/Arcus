@@ -43,12 +43,26 @@ def build_monthly_pl(merged_data: dict) -> pd.DataFrame:
     cogs = merged_data["cogs_monthly"].copy()
     expenses = merged_data["expense_monthly"].copy()
 
-    pl = sales.merge(cogs, on="Month", how="left")
     if not expenses.empty and "month" in expenses.columns:
         expenses = expenses.rename(columns={"month": "Month"})
-        pl = pl.merge(expenses, on="Month", how="left")
 
+    # Outer merge so receipt-only months (e.g. Jul) still appear in P&L
+    pl = sales.merge(cogs, on="Month", how="outer")
+    if not expenses.empty:
+        pl = pl.merge(expenses, on="Month", how="outer")
+
+    for col in ("gross_sales", "discounts", "net_sales", "tax", "cash", "card", "online", "cogs"):
+        if col in pl.columns:
+            pl[col] = pl[col].fillna(0)
+        elif col == "cogs":
+            pl["cogs"] = 0.0
+
+    if "cogs" not in pl.columns:
+        pl["cogs"] = 0.0
     pl["cogs"] = pl["cogs"].fillna(0)
+    if "net_sales" not in pl.columns:
+        pl["net_sales"] = 0.0
+    pl["net_sales"] = pl["net_sales"].fillna(0)
     pl["gross_profit"] = pl["net_sales"] - pl["cogs"]
 
     for cat in OPERATING_EXPENSE_CATEGORIES:
@@ -64,6 +78,11 @@ def build_monthly_pl(merged_data: dict) -> pd.DataFrame:
     )
 
     pl = pl.sort_values("Month", key=lambda s: s.map(_month_sort_key)).reset_index(drop=True)
+    # Drop months with no activity (all zeros)
+    value_cols = ["gross_sales", "net_sales", "cogs", *OPERATING_EXPENSE_CATEGORIES]
+    present = [c for c in value_cols if c in pl.columns]
+    if present:
+        pl = pl[pl[present].abs().sum(axis=1) > 0].reset_index(drop=True)
     return pl
 
 

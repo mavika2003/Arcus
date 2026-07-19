@@ -17,8 +17,13 @@ from src.calculations.financials import (
     get_payment_distribution,
 )
 from src.calculations.pl_builder import build_pl_display_rows, build_pl_display_rows_from_df
-from src.config import DEFAULT_BS_FILE, EXPENSES_DIR, MONTHS, SALES_DIR
-from src.data.cleaners import clean_sales_data, merge_financial_data
+from src.config import DEFAULT_BS_FILE, EXPENSES_DIR, MONTHS, SALES_DIR, USE_SUPABASE
+from src.data.cleaners import (
+    clean_sales_data,
+    empty_sales_for_months,
+    merge_financial_data,
+    months_from_expense_data,
+)
 from src.data.loaders import (
     load_balance_sheet_csv,
     load_daily_sales,
@@ -31,6 +36,7 @@ from src.data.loaders import (
     parse_recurring_costs,
 )
 from src.services.alerts import get_all_alerts
+from src.services.receipts import apply_receipt_bs_impact, load_all_receipts, merge_receipt_expenses
 
 
 class DashboardData:
@@ -51,8 +57,10 @@ class DashboardData:
         self.bs_totals: dict = {}
         self.alerts: list[dict] = []
         self.warnings: list[str] = []
-        self.company_name: str = "Sai Dham"
+        self.company_name: str = "Arcus"
         self.months: list[str] = []
+        self.receipts: list[dict] = []
+        self.receipt_cash_outflow: float = 0.0
 
 
 def process_data(
@@ -64,7 +72,10 @@ def process_data(
 
     # --- Sales ---
     try:
-        if sales_source is not None:
+        if USE_SUPABASE:
+            from src.data.supabase_loaders import load_sales_from_supabase
+            raw_sales = load_sales_from_supabase()
+        elif sales_source is not None:
             raw_sales = load_daily_sales(sales_source)
         elif SALES_DIR.exists() and list(SALES_DIR.glob("*.csv")):
             raw_sales = load_sales_folder()
@@ -81,7 +92,14 @@ def process_data(
     # --- Expenses & balance sheet ---
     cogs_df = pd.DataFrame()
     try:
-        if pl_source is not None:
+        if USE_SUPABASE:
+            from src.data.supabase_loaders import (
+                load_balance_sheet_from_supabase,
+                load_expenses_from_supabase,
+            )
+            data.recurring_costs, cogs_df = load_expenses_from_supabase()
+            data.bs_data = load_balance_sheet_from_supabase()
+        elif pl_source is not None:
             workbook = load_pl_workbook(pl_source)
             if "Recurring Cost" in workbook:
                 data.recurring_costs = parse_recurring_costs(workbook["Recurring Cost"])
@@ -107,14 +125,38 @@ def process_data(
     except Exception as e:
         data.warnings.append(f"Expenses load error: {e}")
 
-    # --- Build P&L from raw sales + expenses ---
-    if not data.sales_df.empty:
-        merged = merge_financial_data(data.sales_df, data.recurring_costs, cogs_df)
+    # --- OCR receipts → merge into expenses / COGS and balance sheet ---
+    try:
+        data.receipts = load_all_receipts()
+        data.recurring_costs, cogs_df, data.receipt_cash_outflow = merge_receipt_expenses(
+            data.recurring_costs, cogs_df
+        )
+        if data.bs_data and data.receipts:
+            data.bs_data = apply_receipt_bs_impact(data.bs_data, data.receipts)
+    except Exception as e:
+        data.warnings.append(f"Receipt merge error: {e}")
+
+    # --- Build P&L from sales + expenses (including OCR receipts) ---
+    has_expenses = (
+        not data.recurring_costs.empty
+        or (not cogs_df.empty and "cogs" in cogs_df.columns and cogs_df["cogs"].sum() > 0)
+        or (not cogs_df.empty and "month" in cogs_df.columns)
+    )
+    sales_for_pl = data.sales_df
+    if sales_for_pl.empty and has_expenses:
+        expense_months = months_from_expense_data(data.recurring_costs, cogs_df)
+        if expense_months:
+            sales_for_pl = empty_sales_for_months(expense_months)
+
+    if not sales_for_pl.empty:
+        merged = merge_financial_data(sales_for_pl, data.recurring_costs, cogs_df)
         data.pl_df = build_monthly_pl(merged)
         data.months = [m for m in MONTHS if m in data.pl_df["Month"].values]
+        if not data.months:
+            data.months = months_from_expense_data(data.recurring_costs, cogs_df)
         data.pl_display_rows = build_pl_display_rows_from_df(data.pl_df, months=data.months)
         data.ytd_summary = compute_ytd_summary(data.pl_df)
-    elif data.pl_workbook_data:
+    elif data.pl_workbook_data and not data.receipts:
         data.months = [m.split()[0] for m in data.pl_workbook_data.get("months", [])]
         active_months = [m for m in MONTHS if m in data.months] or data.months[:2]
         data.pl_display_rows = build_pl_display_rows(data.pl_workbook_data, months=active_months)

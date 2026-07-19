@@ -1,0 +1,3 @@
+# Optional: ignore empty placeholder so git keeps the folder idea
+*
+!.gitignore

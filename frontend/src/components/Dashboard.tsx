@@ -16,6 +16,7 @@ import ProfitMarginChart, { MonthSummaryCards } from "@/components/ProfitMarginC
 import BalanceSheetView from "@/components/BalanceSheetView";
 import UploadPanel from "@/components/UploadPanel";
 import Categorizer from "@/components/Categorizer";
+import ReceiptUpload from "@/components/ReceiptUpload";
 import GlassCard, { SectionLabel, SectionTitle } from "@/components/GlassCard";
 import { exportUrl, fetchDashboard } from "@/lib/api";
 import Currency from "@/components/Currency";
@@ -261,12 +262,37 @@ export default function Dashboard() {
 
             {tab === "pl" && data && (
               <div className="space-y-6">
+                {data.receipt_count ? (
+                  <GlassCard className="p-4">
+                    <p className="text-sm text-text-secondary">
+                      <span className="font-semibold text-accent">{data.receipt_count} receipt(s)</span>
+                      {" "}logged via OCR
+                      {data.receipt_cash_outflow
+                        ? ` · ${data.receipt_cash_outflow.toLocaleString()} AED in purchases`
+                        : ""}
+                      . COGS and operating expenses below include scanned bills.
+                    </p>
+                  </GlassCard>
+                ) : null}
                 {ytd && <PLFlowDiagram ytd={ytd} onNavigate={navigate} />}
                 <PLTable rows={data.pl_display_rows} months={data.months} />
               </div>
             )}
 
-            {tab === "balance" && data && <BalanceSheetView data={data.balance_sheet} />}
+            {tab === "balance" && data && (
+              <div className="space-y-6">
+                {data.receipt_count ? (
+                  <GlassCard className="p-4">
+                    <p className="text-sm text-text-secondary">
+                      Receipt purchases update{" "}
+                      <span className="font-semibold text-text">Inventory</span> (COGS) and{" "}
+                      <span className="font-semibold text-text">Accounts Payable</span> (card payments).
+                    </p>
+                  </GlassCard>
+                ) : null}
+                <BalanceSheetView data={data.balance_sheet} />
+              </div>
+            )}
 
             {tab === "tools" && (
               <div className="grid gap-6 md:grid-cols-2">
@@ -275,6 +301,12 @@ export default function Dashboard() {
                   onError={setError}
                 />
                 <Categorizer />
+
+                <ReceiptUpload
+                  onDataLoaded={(d) => { setData(d); setError(null); }}
+                  onError={setError}
+                  onViewPl={() => navigate("pl")}
+                />
 
                 <GlassCard className="p-6 md:col-span-2" delay={100}>
                   <SectionLabel>Export</SectionLabel>

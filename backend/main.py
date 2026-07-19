@@ -1,16 +1,14 @@
 """FastAPI backend for Arcus financial dashboard."""
 
-from __future__ import annotations
-
 import io
 import os
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Tuple
 
 import numpy as np
 import pandas as pd
-from fastapi import APIRouter, FastAPI, File, UploadFile
+from fastapi import APIRouter, FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, StreamingResponse
 
@@ -20,6 +18,12 @@ sys.path.insert(0, str(ROOT))
 from src.pipeline import process_data
 from src.services.categorizer import categorize_expense
 from src.services.export import export_to_excel, export_to_pdf
+from src.services.receipts import (
+  confirm_receipt_record,
+  ingest_receipt_bytes,
+  load_all_receipts,
+  preview_receipt_bytes,
+)
 
 app = FastAPI(title="Arcus Financial API", version="1.0.0")
 
@@ -82,6 +86,18 @@ def _serialize_dashboard(data) -> dict:
         "tax": float(row.get("tax", 0)),
       })
 
+  receipt_summaries = []
+  for r in getattr(data, "receipts", []) or []:
+    receipt_summaries.append({
+      "id": r.get("id"),
+      "vendor_name": r.get("vendor_name"),
+      "transaction_date": r.get("transaction_date"),
+      "total_amount": r.get("total_amount"),
+      "category": r.get("category"),
+      "pl_category": r.get("pl_category"),
+      "currency": r.get("currency", "AED"),
+    })
+
   return _json_safe({
     "company_name": data.company_name,
     "ytd_summary": data.ytd_summary,
@@ -99,6 +115,9 @@ def _serialize_dashboard(data) -> dict:
     "balance_sheet": data.bs_totals,
     "warnings": data.warnings,
     "transaction_count": len(data.sales_df),
+    "receipts": receipt_summaries,
+    "receipt_count": len(receipt_summaries),
+    "receipt_cash_outflow": getattr(data, "receipt_cash_outflow", 0),
   })
 
 
@@ -132,6 +151,138 @@ async def upload_dashboard(
 def categorize(body: dict):
   description = body.get("description", "")
   return categorize_expense(description)
+
+
+@router.post("/upload-receipt")
+async def upload_receipt(file: UploadFile = File(...)):
+  """OCR a receipt image — returns editable preview only (human-in-the-loop before save)."""
+  image_bytes, filename = await _read_receipt_upload(file)
+  try:
+    preview = preview_receipt_bytes(image_bytes, filename=filename)
+  except RuntimeError as exc:
+    raise HTTPException(status_code=500, detail=str(exc)) from exc
+  except Exception as exc:  # noqa: BLE001
+    raise HTTPException(status_code=500, detail=f"Failed to process receipt: {exc}") from exc
+
+  return _json_safe({"receipt": preview, "dashboard": None})
+
+
+@router.post("/receipts/confirm")
+def confirm_receipt(body: dict):
+  """Save user-reviewed (and possibly edited) receipt into P&L / balance sheet."""
+  try:
+    result = confirm_receipt_record(body)
+  except Exception as exc:  # noqa: BLE001
+    raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+  try:
+    dashboard = _serialize_dashboard(process_data())
+  except Exception:
+    dashboard = None
+
+  return _json_safe({"receipt": result, "dashboard": dashboard})
+
+
+async def _read_receipt_upload(file: UploadFile) -> Tuple[bytes, Optional[str]]:
+  if not file.filename:
+    raise HTTPException(status_code=400, detail="No file provided")
+
+  content_type = (file.content_type or "").lower()
+  name_lower = file.filename.lower()
+  ok_ext = name_lower.endswith((".jpg", ".jpeg", ".png", ".webp", ".heic", ".pdf"))
+  ok_mime = content_type.startswith("image/") or content_type == "application/pdf"
+  if content_type and not (ok_mime or ok_ext):
+    raise HTTPException(
+      status_code=400,
+      detail="Unsupported file type. Upload a JPG, PNG, WEBP, or PDF receipt image.",
+    )
+
+  image_bytes = await file.read()
+  if not image_bytes:
+    raise HTTPException(status_code=400, detail="Empty file uploaded")
+
+  if name_lower.endswith(".pdf") or content_type == "application/pdf":
+    try:
+      from pdf2image import convert_from_bytes
+      pages = convert_from_bytes(image_bytes, first_page=1, last_page=1, dpi=200)
+      buf = io.BytesIO()
+      pages[0].save(buf, format="PNG")
+      image_bytes = buf.getvalue()
+    except Exception as exc:
+      raise HTTPException(
+        status_code=400,
+        detail="PDF receipts require poppler + pdf2image. Please upload a JPG/PNG photo of the receipt.",
+      ) from exc
+
+  return image_bytes, file.filename
+
+
+@router.post("/receipts/scan")
+async def scan_receipt(file: UploadFile = File(...)):
+  """Alias for upload-receipt — OCR preview without persisting."""
+  return await upload_receipt(file)
+
+
+@router.get("/receipts")
+def list_receipts():
+  rows = load_all_receipts()
+  return _json_safe({
+    "receipts": [
+      {
+        "id": r.get("id"),
+        "vendor_name": r.get("vendor_name"),
+        "transaction_date": r.get("transaction_date"),
+        "total_amount": r.get("total_amount"),
+        "category": r.get("category"),
+        "pl_category": r.get("pl_category"),
+        "currency": r.get("currency", "AED"),
+        "payment_method": r.get("payment_method"),
+      }
+      for r in rows
+    ],
+    "count": len(rows),
+  })
+
+
+@router.delete("/receipts/latest")
+def delete_latest_receipt(month: Optional[str] = None):
+  """Delete the most recently added receipt, optionally filtered by month (e.g. Jul)."""
+  from src.config import USE_SUPABASE
+  if USE_SUPABASE:
+    raise HTTPException(status_code=501, detail="Delete via Supabase not implemented yet")
+
+  from src.data.receipt_store import delete_latest_receipt_for_month, load_receipts_local
+
+  deleted_id: Optional[str] = None
+  if month:
+    deleted_id = delete_latest_receipt_for_month(month)
+  else:
+    rows = load_receipts_local()
+    if rows:
+      rows.sort(key=lambda r: r.get("created_at") or "", reverse=True)
+      from src.data.receipt_store import delete_receipt_local
+      rid = str(rows[0].get("id", ""))
+      if rid and delete_receipt_local(rid):
+        deleted_id = rid
+
+  if not deleted_id:
+    raise HTTPException(status_code=404, detail="No matching receipt to delete")
+
+  return _json_safe({
+    "deleted": deleted_id,
+    "dashboard": _serialize_dashboard(process_data()),
+  })
+
+
+@router.delete("/receipts/{receipt_id}")
+def delete_receipt(receipt_id: str):
+  from src.config import USE_SUPABASE
+  if USE_SUPABASE:
+    raise HTTPException(status_code=501, detail="Delete via Supabase not implemented yet")
+  from src.data.receipt_store import delete_receipt_local
+  if not delete_receipt_local(receipt_id):
+    raise HTTPException(status_code=404, detail="Receipt not found")
+  return _json_safe({"deleted": receipt_id, "dashboard": _serialize_dashboard(process_data())})
 
 
 @router.get("/export/excel")
